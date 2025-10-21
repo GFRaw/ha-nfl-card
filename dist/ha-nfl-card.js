@@ -19,6 +19,15 @@ class NFLCard extends LitElement {
     return 5;
   }
 
+  _callTapAction() {
+    if (this.hass) {
+      if (this.config.button) {
+        this.hass.callService('button', 'press', {
+        entity_id: this.config.button;
+      });
+    }
+  }
+  
   render() {
     if (!this.hass || !this._config) {
       return html``;
@@ -182,7 +191,7 @@ class NFLCard extends LitElement {
             .post-game { margin: 0 auto; }
           </style>
           <ha-card>
-            <div class="card">
+            <div onClick="${this._callTapAction}" class="card">
             <img class="team-bg" src="${stateObj.attributes.team_logo}" />
             <img class="opponent-bg" src="${stateObj.attributes.opponent_logo}" />
             <div class="card-content">
