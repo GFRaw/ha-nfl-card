@@ -46,6 +46,55 @@ type: module
 | `outline_color` | Specifies outline color. | `white` | No |  CSS color or hex value  |
 | `locale` | Specifies the locale to use for date and time. | `en-US` | No | A valid [locale code.](https://simplelocalize.io/data/locales/) |
 | `disable_odds` | Disables displaying "odds", "over/under", and "Win Probability" |  `false` | No | `true` `false` |
+| `team_tap_action` | Action to run when your team's logo is tapped | none | No | [Action config](#logo-tap-actions) |
+| `opponent_tap_action` | Action to run when the opponent's logo is tapped | none | No | [Action config](#logo-tap-actions) |
+| `logo_tap_action` | Fallback action used for either logo when the side-specific option isn't set | none | No | [Action config](#logo-tap-actions) |
+
+## Logo Tap Actions
+Tapping a team logo can run a Home Assistant action. The config follows the standard
+[Lovelace action](https://www.home-assistant.io/dashboards/actions/) format.
+
+| `action` | Extra keys |
+| --- | --- |
+| `perform-action` (or `call-service`) | `perform_action` (or `service`), `data` (or `service_data`), `target` |
+| `navigate` | `navigation_path`, `navigation_replace` |
+| `url` | `url_path` |
+| `more-info` | `entity` (defaults to the card's sensor) |
+| `toggle` | `entity` |
+| `fire-dom-event` | anything (sent with the `ll-custom` event) |
+| `none` | – |
+
+Every action also accepts `confirmation` (`true`, or `{text: "..."}`) and `title` (hover tooltip).
+
+Any string in the action can use placeholders, filled in from the sensor's attributes when tapped.
+`{team_*}` refers to the **tapped** team and `{opponent_*}` to the other one, so one `logo_tap_action`
+works for both logos. Examples: `{team_name}`, `{team_abbr}`, `{team_id}`, `{opponent_name}`,
+`{side}` (`team` or `opponent`), `{entity}`.
+
+```
+type: 'custom:nfl-card'
+entity: sensor.nfl
+team_tap_action:
+  action: perform-action
+  perform_action: script.touchdown_lights
+  data:
+    team: '{team_abbr}'
+opponent_tap_action:
+  action: url
+  url_path: 'https://www.espn.com/nfl/team/_/name/{team_abbr}'
+```
+
+```
+type: 'custom:nfl-card'
+entity: sensor.nfl
+logo_tap_action:
+  action: perform-action
+  perform_action: notify.mobile_app_phone
+  confirmation:
+    text: Send a notification?
+  data:
+    message: 'Go {team_name}! (vs {opponent_name})'
+```
 
 ## Examples
 ```
