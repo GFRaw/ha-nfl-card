@@ -19,21 +19,119 @@ class NFLCard extends LitElement {
     return 5;
   }
 
-  _callTapAction() {
-    if (this.hass) {
-      if (this.config.button) {
-        this.hass.callService('button', 'press', {
-        entity_id: this.config.button;
+  // ---- Logo tap actions ---------------------------------------------------
+  // side is 'team' or 'opponent'. Returns the action config for that logo,
+  // or undefined if none is configured.
+  _getLogoAction(side) {
+    const action = this._config[`${side}_tap_action`] || this._config.logo_tap_action;
+    if (!action || action.action === 'none') return undefined;
+    return action;
+  }
+
+  // Replace {team_name}, {team_abbr}, {team_id}, {side}, etc. in strings so a
+  // single action definition can refer to whichever logo was tapped.
+  _fillPlaceholders(value, side) {
+    if (typeof value === 'string') {
+      const attrs = this.hass.states[this._config.entity].attributes;
+      return value.replace(/\{(side|entity|team_[a-z_]+|opponent_[a-z_]+)\}/g, (m, key) => {
+        if (key === 'side') return side;
+        if (key === 'entity') return this._config.entity;
+        // {team_*} refers to the tapped team; {opponent_*} to the other one.
+        const other = side === 'team' ? 'opponent' : 'team';
+        const attrKey = key.startsWith('team_')
+          ? `${side}_${key.slice(5)}`
+          : `${other}_${key.slice(9)}`;
+        return attrs[attrKey] !== undefined ? String(attrs[attrKey]) : m;
       });
     }
+    if (Array.isArray(value)) return value.map((v) => this._fillPlaceholders(v, side));
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = this._fillPlaceholders(v, side);
+      return out;
+    }
+    return value;
   }
-  
+
+  _fireEvent(type, detail) {
+    this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
+  }
+
+  _handleLogoTap(ev, side) {
+    ev.stopPropagation();
+    const raw = this._getLogoAction(side);
+    if (!raw) return;
+    const action = this._fillPlaceholders(raw, side);
+
+    if (action.confirmation) {
+      const text = typeof action.confirmation === 'object' && action.confirmation.text
+        ? action.confirmation.text
+        : `Are you sure you want to run this action?`;
+      if (!window.confirm(text)) return;
+    }
+
+    switch (action.action) {
+      case 'more-info':
+        this._fireEvent('hass-more-info', { entityId: action.entity || this._config.entity });
+        break;
+      case 'navigate':
+        if (!action.navigation_path) break;
+        if (action.navigation_replace) {
+          history.replaceState(null, '', action.navigation_path);
+        } else {
+          history.pushState(null, '', action.navigation_path);
+        }
+        this._fireEvent('location-changed', { replace: !!action.navigation_replace });
+        break;
+      case 'url':
+        if (action.url_path) window.open(action.url_path);
+        break;
+      case 'toggle':
+        if (action.entity) {
+          this.hass.callService('homeassistant', 'toggle', { entity_id: action.entity });
+        }
+        break;
+      case 'perform-action':
+      case 'call-service': {
+        const svc = action.perform_action || action.service;
+        if (!svc || !svc.includes('.')) break;
+        const [domain, service] = svc.split('.', 2);
+        const data = action.data || action.service_data || {};
+        this.hass.callService(domain, service, data, action.target);
+        break;
+      }
+      case 'fire-dom-event':
+        this._fireEvent('ll-custom', action);
+        break;
+      default:
+        console.warn('nfl-card: unsupported tap action', action);
+    }
+  }
+
+  // Renders a team logo, wiring up a tap action if one is configured.
+  _logo(side, src) {
+    const action = this._getLogoAction(side);
+    if (!action) return html`<img src="${src}" />`;
+    return html`<img
+      class="clickable"
+      src="${src}"
+      role="button"
+      tabindex="0"
+      title="${action.title || ''}"
+      @click=${(ev) => this._handleLogoTap(ev, side)}
+      @keydown=${(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); this._handleLogoTap(ev, side); } }}
+    />`;
+  }
+
   render() {
     if (!this.hass || !this._config) {
       return html``;
     }
 
     const stateObj = this.hass.states[this._config.entity];
+    if (!stateObj) {
+      return html` <ha-card>Unknown entity: ${this._config.entity}</ha-card> `;
+    }
     const outline = this._config.outline;
     const outlineColor = this._config.outline_color;
     const locale = this._config.locale;
@@ -93,9 +191,6 @@ class NFLCard extends LitElement {
       var oppoColor = stateObj.attributes.opponent_colors[0];
     }
 
-    if (!stateObj) {
-      return html` <ha-card>Unknown entity: ${this._config.entity}</ha-card> `;
-    }
     if (stateObj.state == 'unavailable') {
       return html`
         <style>
@@ -116,6 +211,7 @@ class NFLCard extends LitElement {
           .card-content { display: flex; justify-content: space-evenly; align-items: center; text-align: center; position: relative; z-index: 1; }
           .team { text-align: center; width: 35%;}
           .team img { max-width: 90px; }
+          .team img.clickable { cursor: pointer; }
           .score { font-size: 3em; text-align: center; }
           .teamscr { opacity: ${teamScore}; }
           .opposcr { opacity: ${oppoScore}; }
@@ -130,7 +226,7 @@ class NFLCard extends LitElement {
             <img class="opponent-bg" src="${stateObj.attributes.opponent_logo}" />
             <div class="card-content">
               <div class="team">
-                <img src="${stateObj.attributes.team_logo}" />
+                ${this._logo('team', stateObj.attributes.team_logo)}
                 <div class="name">${stateObj.attributes.team_name}</div>
                 <div class="record">${stateObj.attributes.team_record}</div>
               </div>
@@ -138,7 +234,7 @@ class NFLCard extends LitElement {
               <div class="divider">-</div>
               <div class="score opposcr">${oScr}</div>
               <div class="team">
-                <img src="${stateObj.attributes.opponent_logo}" />
+                ${this._logo('opponent', stateObj.attributes.opponent_logo)}
                 <div class="name">${stateObj.attributes.opponent_name}</div>
                 <div class="record">${stateObj.attributes.opponent_record}</div>
               </div>
@@ -159,6 +255,7 @@ class NFLCard extends LitElement {
             .card-content { display: flex; justify-content: space-evenly; align-items: center; text-align: center; position: relative; z-index: 1; }
             .team { text-align: center; width:35%; }
             .team img { max-width: 90px; }
+          .team img.clickable { cursor: pointer; }
             .possession, .teamposs, .oppoposs { font-size: 2.5em; text-align: center; opacity: 0; font-weight:900; }
             .teamposs {opacity: ${teamPoss} !important; }
             .oppoposs {opacity: ${oppoPoss} !important; }
@@ -191,12 +288,12 @@ class NFLCard extends LitElement {
             .post-game { margin: 0 auto; }
           </style>
           <ha-card>
-            <div onClick="${this._callTapAction}" class="card">
+            <div class="card">
             <img class="team-bg" src="${stateObj.attributes.team_logo}" />
             <img class="opponent-bg" src="${stateObj.attributes.opponent_logo}" />
             <div class="card-content">
               <div class="team">
-                <img src="${stateObj.attributes.team_logo}" />
+                ${this._logo('team', stateObj.attributes.team_logo)}
                 <div class="name">${stateObj.attributes.team_name}</div>
                 <div class="record">${stateObj.attributes.team_record}</div>
                 <div class="timeouts">
@@ -211,7 +308,7 @@ class NFLCard extends LitElement {
               <div class="score">${stateObj.attributes.opponent_score}</div>
               <div class="oppoposs">&bull;</div>
               <div class="team">
-                <img src="${stateObj.attributes.opponent_logo}" />
+                ${this._logo('opponent', stateObj.attributes.opponent_logo)}
                 <div class="name">${stateObj.attributes.opponent_name}</div>
                 <div class="record">${stateObj.attributes.opponent_record}</div>
                 <div class="timeouts">
@@ -258,6 +355,7 @@ class NFLCard extends LitElement {
             .card-content { display: flex; justify-content: space-evenly; align-items: center; text-align: center; position: relative; z-index: 1; }
             .team { text-align: center; width: 35%; }
             .team img { max-width: 90px; }
+          .team img.clickable { cursor: pointer; }
             .name { font-size: 1.4em; margin-bottom: 4px; }
             .line { height: 1px; background-color: var(--primary-text-color); margin:10px 0; }
             .gameday { font-size: 1.4em; margin-bottom: 4px; }
@@ -281,7 +379,7 @@ class NFLCard extends LitElement {
               <img class="opponent-bg" src="${stateObj.attributes.opponent_logo}" />
               <div class="card-content">
                 <div class="team">
-                  <img src="${stateObj.attributes.team_logo}" />
+                  ${this._logo('team', stateObj.attributes.team_logo)}
                   <div class="name">${stateObj.attributes.team_name}</div>
                   <div class="record">${stateObj.attributes.team_record}</div>
                 </div>
@@ -290,7 +388,7 @@ class NFLCard extends LitElement {
                   <div class="gametime">${gameTime}</div>
                 </div>
                 <div class="team">
-                  <img src="${stateObj.attributes.opponent_logo}" />
+                  ${this._logo('opponent', stateObj.attributes.opponent_logo)}
                   <div class="name">${stateObj.attributes.opponent_name}</div>
                   <div class="record">${stateObj.attributes.opponent_record}</div>
                 </div>
@@ -323,6 +421,7 @@ class NFLCard extends LitElement {
           .card-content { display: flex; justify-content: space-evenly; align-items: center; text-align: center; position: relative; z-index: 1; }
           .team { text-align: center; width: 50%; }
           .team img { max-width: 90px; }
+          .team img.clickable { cursor: pointer; }
           .name { font-size: 1.6em; margin-bottom: 4px; }
           .line { height: 1px; background-color: var(--primary-text-color); margin:10px 0; }
           .bye { font-size: 1.8em; text-align: center; width: 50%; }
@@ -332,7 +431,7 @@ class NFLCard extends LitElement {
             <img class="team-bg" src="${stateObj.attributes.team_logo}" />
             <div class="card-content">
               <div class="team">
-                <img src="${stateObj.attributes.team_logo}" />
+                ${this._logo('team', stateObj.attributes.team_logo)}
                 <div class="name">${stateObj.attributes.team_name}</div>
                 <div class="record">${stateObj.attributes.team_record}</div>
               </div>
@@ -351,6 +450,7 @@ class NFLCard extends LitElement {
           .card-content { display: flex; justify-content: space-evenly; align-items: center; text-align: center; position: relative; z-index: 1; }
           .team { text-align: center; width: 50%; }
           .team img { max-width: 90px; }
+          .team img.clickable { cursor: pointer; }
           .name { font-size: 1.6em; margin-bottom: 4px; }
           .line { height: 1px; background-color: var(--primary-text-color); margin:10px 0; }
           .eos { font-size: 1.8em; line-height: 1.2em; text-align: center; width: 50%; }
